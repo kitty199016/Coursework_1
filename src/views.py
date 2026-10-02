@@ -1,50 +1,68 @@
 from datetime import datetime, timedelta
 import json
-import random
+import os
 import urllib.request
 import xml.etree.ElementTree as ET
-import yfinance as yf  # Реальное API для котировок акций США
+import pandas as pd
+import yfinance as yf
+
 
 # ==========================================
-# МОК-ДАННЫЕ ДЛЯ ТРАНЗАКЦИЙ (ИСТОЧНИК ПОЛЬЗОВАТЕЛЯ)
+# ЧТЕНИЕ ДАННЫХ ИЗ EXCEL (.XLS)
 # ==========================================
 
-EXPENSE_CATEGORIES = [
-    "Супермаркеты", "Рестораны", "Транспорт", "Одежда", "Здоровье",
-    "Развлечения", "Коммунальные платежи", "Связь", "Техника", "Красота"
-]
+def load_transactions_from_xls(file_path: str = "data/operations.xls") -> list:
+    """
+    Загружает транзакции из Excel-файла (.xls).
+    Ожидает колонки: 'Дата', 'Тип', 'Категория', 'Сумма'.
+    """
+    if not os.path.exists(file_path):
+        print(f"Предупреждение: Файл {file_path} не найден. Используются пустые данные.")
+        return []
 
+    try:
+        # Читаем .xls с помощью pandas (движок xlrd)
+        df = pd.read_excel(file_path, engine='xlrd')
 
-def generate_mock_data():
-    """Генерирует случайную историю транзакций для демонстрации."""
-    random.seed(42)
-    transactions = []
-    end_date = datetime(2026, 10, 2)
-    start_date = end_date - timedelta(days=365)
+        # Приводим названия колонок к единому регистру и удаляем лишние пробелы
+        df.columns = [str(col).strip().lower() for col in df.columns]
 
-    current_date = start_date
-    while current_date <= end_date:
-        if random.random() < 0.7:
-            cat = random.choice(EXPENSE_CATEGORIES + ["Наличные", "Переводы"])
+        # Маппинг колонок (поддерживает как русские, так и английские названия)
+        col_mapping = {
+            'дата': 'date', 'date': 'date',
+            'тип': 'type', 'type': 'type',
+            'категория': 'category', 'category': 'category',
+            'сумма': 'amount', 'amount': 'amount'
+        }
+        df = df.rename(columns=col_mapping)
+
+        # Фильтруем только нужные колонки
+        required_cols = ['date', 'type', 'category', 'amount']
+        df = df[[col for col in required_cols if col in df.columns]]
+
+        # Приведение типов данных
+        df['date'] = pd.to_datetime(df['date'])
+        df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
+        df['type'] = df['type'].astype(str).str.strip().str.lower()
+        df['category'] = df['category'].astype(str).str.strip()
+
+        # Приведение значений типа ('расход' / 'поступление') к стандарту
+        type_map = {'расход': 'расход', 'expense': 'расход', 'поступление': 'поступление', 'income': 'поступление'}
+        df['type'] = df['type'].map(type_map).fillna('расход')
+
+        # Превращаем DataFrame в список словарей для обработки нашей логикой
+        transactions = []
+        for _, row in df.iterrows():
             transactions.append({
-                "date": current_date,
-                "type": "расход",
-                "category": cat,
-                "amount": random.randint(100, 5000)
+                "date": row['date'].to_pydatetime(),
+                "type": row['type'],
+                "category": row['category'],
+                "amount": float(row['amount'])
             })
-        if random.random() < 0.2:
-            cat = random.choice(["Зарплата", "Аванс", "Кэшбэк"])
-            transactions.append({
-                "date": current_date,
-                "type": "поступление",
-                "category": cat,
-                "amount": random.randint(500, 50000)
-            })
-        current_date += timedelta(hours=random.randint(4, 24))
-    return transactions
-
-
-TRANSACTIONS = generate_mock_data()
+        return transactions
+    except Exception as e:
+        print(f"Ошибка при чтении файла {file_path}: {e}")
+        return []
 
 
 # ==========================================
@@ -52,10 +70,7 @@ TRANSACTIONS = generate_mock_data()
 # ==========================================
 
 def fetch_cbr_currency_rates(date_str: str) -> dict:
-    """
-    [РЕАЛЬНОЕ API] Получает официальные курсы валют от ЦБ РФ на указанную дату.
-    URL: cbr.ru/scripts/XML_daily.asp
-    """
+    """Получает официальные курсы валют от ЦБ РФ на указанную дату."""
     target_date = datetime.strptime(date_str, "%Y-%m-%d")
     cbr_date_str = target_date.strftime("%d/%m/%Y")
     url = f"https://cbr.ru{cbr_date_str}"
@@ -81,38 +96,34 @@ def fetch_cbr_currency_rates(date_str: str) -> dict:
                 rates[char_code] = round(rate_per_unit, 2)
         return rates
     except Exception as e:
-        print(f"Ошибка API ЦБ РФ ({e}). Возвращены базовые значения.")
+        print(f"Ошибка API ЦБ РФ ({e}). Использованы базовые значения.")
         return {"USD": 92.50, "EUR": 100.15, "CNY": 12.80}
 
 
 def fetch_real_stock_prices() -> dict:
-    """
-    [РЕАЛЬНОЕ API] Получает рыночную стоимость акций из S&P 500 в реальном времени.
-    Использует yfinance без авторизационных ключей.
-    """
+    """Получает рыночную стоимость акций из S&P 500 в реальном времени."""
     tickers = ["AAPL", "MSFT", "NVDA", "AMZN"]
     stock_prices = {}
     try:
-        # Скачиваем последнюю информацию по тикерам за 1 день
         data = yf.download(tickers, period="1d", progress=False)
-        # Извлекаем цену закрытия (Close) последней торговой сессии
         for ticker in tickers:
             last_price = data['Close'][ticker].iloc[-1]
             stock_prices[ticker] = round(float(last_price), 2)
         return stock_prices
     except Exception as e:
-        print(f"Ошибка API Yahoo Finance ({e}). Возвращены базовые значения акций.")
+        print(f"Ошибка API Yahoo Finance ({e}). Использованы базовые значения.")
         return {"AAPL": 175.2, "MSFT": 420.5, "NVDA": 875.0, "AMZN": 180.1}
 
 
 # ==========================================
-# РАСЧЕТ ВРЕМЕННЫХ ИНТЕРВАЛОВ
+# ВЫЧИСЛЕНИЕ ДИАПАЗОНОВ С УЧЕТОМ УСЛОВИЯ
 # ==========================================
 
 def get_date_range(date_str: str, period: str = "DEFAULT"):
     target_date = datetime.strptime(date_str, "%Y-%m-%d")
 
     if period == "DEFAULT":
+        # По умолчанию: с начала месяца, на который выпадает дата, по саму дату
         start_date = datetime(target_date.year, target_date.month, 1)
         end_date = target_date
     elif period == "W":
@@ -137,17 +148,20 @@ def get_date_range(date_str: str, period: str = "DEFAULT"):
 
 
 # ==========================================
-# ГЛАВНАЯ ФУНКЦИЯ ОБРАБОТКИ ДАННЫХ
+# ГЛАВНАЯ ФУНКЦИЯ ОБРАБОТКИ
 # ==========================================
 
-def process_financial_data(date_str: str, period: str = "DEFAULT") -> str:
+def process_financial_data(date_str: str, period: str = "DEFAULT", file_path: str = "data/operations.xls") -> str:
     try:
         start_date, end_date = get_date_range(date_str, period)
     except ValueError as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
+    # Загружаем "живые" транзакции напрямую из Excel-файла
+    transactions = load_transactions_from_xls(file_path)
+
     # Фильтрация транзакций
-    filtered_tx = [tx for tx in TRANSACTIONS if start_date <= tx["date"] <= end_date]
+    filtered_tx = [tx for tx in transactions if start_date <= tx["date"] <= end_date]
 
     expenses_main = {}
     expenses_transfers = {"Наличные": 0, "Переводы": 0}
@@ -168,7 +182,7 @@ def process_financial_data(date_str: str, period: str = "DEFAULT") -> str:
             total_incomes += amount
             incomes_main[category] = incomes_main.get(category, 0) + amount
 
-    # Обработка основных расходов: сортировка по убыванию и слияние в "Остальное"
+    # Обработка основных расходов (Топ-7 + Остальное)
     sorted_exp_main = sorted(expenses_main.items(), key=lambda x: x[1], reverse=True)
     top_7_exp = sorted_exp_main[:7]
     others_exp = sorted_exp_main[7:]
@@ -185,11 +199,10 @@ def process_financial_data(date_str: str, period: str = "DEFAULT") -> str:
     sorted_inc_main = sorted(incomes_main.items(), key=lambda x: x[1], reverse=True)
     formatted_inc_main = {cat: round(amt) for cat, amt in sorted_inc_main}
 
-    # Запросы к реальным внешним API
+    # Живые котировки
     live_currency_rates = fetch_cbr_currency_rates(date_str)
     live_stock_prices = fetch_real_stock_prices()
 
-    # Сборка финального JSON-ответа
     response_data = {
         "Расходы": {
             "Общая сумма": round(total_expenses),
@@ -207,10 +220,7 @@ def process_financial_data(date_str: str, period: str = "DEFAULT") -> str:
     return json.dumps(response_data, ensure_ascii=False, indent=4)
 
 
-# ==========================================
-# ТЕСТОВЫЙ ЗАПУСК
-# ==========================================
 if __name__ == "__main__":
-    # Запрос данных за неделю ("W"), на которую приходится 15 мая 2026 года
-    json_result = process_financial_data("2026-05-15", "W")
+    # Демонстрационный запуск
+    json_result = process_financial_data("2026-05-15", "M")
     print(json_result)
