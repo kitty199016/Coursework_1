@@ -116,4 +116,3 @@ def test_top_7_categories_and_others(mock_stocks, mock_currency, mock_load, test
     assert len(main_expenses) == 8
     assert "Остальное" in main_expenses
     assert main_expenses["Остальное"] == 200
-
