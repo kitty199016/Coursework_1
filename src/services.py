@@ -48,53 +48,6 @@ def load_transactions_from_xls(file_path: str = "data/operations.xls") -> list:
         print(f"Ошибка при чтении файла {file_path}: {e}")
         return []
 
-
-def high_yield_cashback_categories(data: list = None, year: int = None, month: int = None,
-                                   file_path: str = "data/operations.xls") -> str:
-    """
-    Анализирует наиболее выгодные категории для повышенного кешбэка (5%).
-    Если data=None, автоматически загружает транзакции из .xls файла.
-
-    :param data: Список транзакций (опционально)
-    :param year: Год анализа
-    :param month: Месяц анализа
-    :param file_path: Путь к файлу Excel
-    :return: JSON со стоимостью потенциального кэшбэка по категориям
-    """
-    if data is None:
-        data = load_transactions_from_xls(file_path)
-
-    cashback_rate = 0.05  # Повышенный кэшбэк 5%
-    category_spending = {}
-
-    for tx in data:
-        tx_date = tx.get("date")
-
-        if (
-                tx.get("type") == "расход"
-                and isinstance(tx_date, datetime)
-                and tx_date.year == year
-                and tx_date.month == month
-        ):
-            category = tx.get("category")
-
-            # Исключаем нерелевантные для кэшбэка категории
-            if category in ["Наличные", "Переводы", "Остальное"]:
-                continue
-
-            amount = tx.get("amount", 0)
-            category_spending[category] = category_spending.get(category, 0) + amount
-
-    # Расчет кэшбэка с округлением до целых чисел и сортировкой по убыванию выгоды
-    potential_cashback = {
-        category: round(spending * cashback_rate)
-        for category, spending in sorted(category_spending.items(), key=lambda x: x, reverse=True)
-    }
-
-    return json.dumps(potential_cashback, ensure_ascii=False, indent=4)
-
-
-
 def high_yield_cashback_categories(data: list = None, year: int = None, month: int = None,
                                    file_path: str = "data/operations.xls") -> str:
     """
