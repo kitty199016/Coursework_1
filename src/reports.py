@@ -20,7 +20,7 @@ def report_to_file(filename_or_func: Optional[Any] = None) -> Callable:
     # Определяем имя файла по умолчанию или берем переданное
     if is_func or filename_or_func is None:
         # Формат по умолчанию: report_ГГГГММДД_ЧЧММСС.json
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y.%m.%d %H:%M:%S")
         custom_filename = f"report_{timestamp}.json"
     else:
         custom_filename = filename_or_func
@@ -68,9 +68,9 @@ def spending_by_category(transactions: pd.DataFrame,
 
     # 4. Фильтруем по категории и временному промежутку
     filtered_df = df[
-        (df['category'] == category) &
-        (df['date'] >= start_date) &
-        (df['date'] <= end_date)
+        (df['Категория'] == category) &
+        (df['Дата операции'] >= start_date) &
+        (df['Дата операции'] <= end_date)
         ]
 
     return filtered_df
