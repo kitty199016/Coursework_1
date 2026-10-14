@@ -57,14 +57,14 @@ def spending_by_category(transactions: pd.DataFrame,
                          category: str,
                          date: str | None = None) -> pd.DataFrame:
     # 1. Определяем конечную дату (если None, берем текущую)
-    end_date = pd.to_datetime(date) if date else pd.Timestamp.now()
+    end_date = pd.to_datetime(date, format="%Y.%m.%d %H:%M:%S") if date else pd.Timestamp.now()
 
     # 2. Вычисляем начальную дату (минус 3 месяца)
     start_date = end_date - pd.DateOffset(months=3)
 
     # 3. Делаем копию, чтобы не изменять исходный датафрейм, и приводим даты
     df = transactions.copy()
-    df['date'] = pd.to_datetime(df['date'])
+    df['Дата операции'] = pd.to_datetime(df['Дата операции'], dayfirst=True)
 
     # 4. Фильтруем по категории и временному промежутку
     filtered_df = df[

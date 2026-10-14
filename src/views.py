@@ -4,7 +4,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 import yfinance as yf
 from typing import Literal
-from services import load_transactions_from_xls
+from src.services import load_transactions_from_xls
 import pandas as pd
 
 PERIOD = Literal["DEFAULT", "W", "M", "Y", "ALL"]

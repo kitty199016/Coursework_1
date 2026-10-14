@@ -1,16 +1,23 @@
-# This is a sample Python script.
 
-# Press Shift+F10 to execute it or replace it with your code.
-# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
+from src.services import high_yield_cashback_categories, load_transactions_from_xls
+from src.services import search_for_transfers_to_individuals
+from src.views import process_financial_data
+from src.reports import  spending_by_category
+
+if __name__ == "__main__":
+    date = "2021.05.25 00:00:00"
+    general_func = process_financial_data(date, "M")
+    print(general_func)
+
+    data = load_transactions_from_xls()
+
+    spending_category = spending_by_category(data, "Супермаркеты", date)
+    print(spending_category)
+
+    cashbacks = high_yield_cashback_categories(data, 2021, 5)
+    print(cashbacks)
+
+    search_transfer = search_for_transfers_to_individuals(data)
+    print(search_transfer)
 
 
-def print_hi(name):
-    # Use a breakpoint in the code line below to debug your script.
-    print(f'Hi, {name}')  # Press Ctrl+F8 to toggle the breakpoint.
-
-
-# Press the green button in the gutter to run the script.
-if __name__ == '__main__':
-    print_hi('PyCharm')
-
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
