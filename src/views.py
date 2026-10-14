@@ -1,69 +1,13 @@
 from datetime import datetime, timedelta
 import json
-import os
 import urllib.request
 import xml.etree.ElementTree as ET
-import pandas as pd
 import yfinance as yf
+from typing import Literal
+from services import load_transactions_from_xls
+import pandas as pd
 
-
-# ==========================================
-# ЧТЕНИЕ ДАННЫХ ИЗ EXCEL (.XLS)
-# ==========================================
-
-def load_transactions_from_xls(file_path: str = "data/operations.xls") -> list:
-    """
-    Загружает транзакции из Excel-файла (.xls).
-    Ожидает колонки: 'Дата', 'Тип', 'Категория', 'Сумма'.
-    """
-    if not os.path.exists(file_path):
-        print(f"Предупреждение: Файл {file_path} не найден. Используются пустые данные.")
-        return []
-
-    try:
-        # Читаем .xls с помощью pandas (движок xlrd)
-        df = pd.read_excel(file_path, engine='xlrd')
-
-        # Приводим названия колонок к единому регистру и удаляем лишние пробелы
-        df.columns = [str(col).strip().lower() for col in df.columns]
-
-        # Маппинг колонок (поддерживает как русские, так и английские названия)
-        col_mapping = {
-            'дата': 'date', 'date': 'date',
-            'тип': 'type', 'type': 'type',
-            'категория': 'category', 'category': 'category',
-            'сумма': 'amount', 'amount': 'amount'
-        }
-        df = df.rename(columns=col_mapping)
-
-        # Фильтруем только нужные колонки
-        required_cols = ['date', 'type', 'category', 'amount']
-        df = df[[col for col in required_cols if col in df.columns]]
-
-        # Приведение типов данных
-        df['date'] = pd.to_datetime(df['date'])
-        df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
-        df['type'] = df['type'].astype(str).str.strip().str.lower()
-        df['category'] = df['category'].astype(str).str.strip()
-
-        # Приведение значений типа ('расход' / 'поступление') к стандарту
-        type_map = {'расход': 'расход', 'expense': 'расход', 'поступление': 'поступление', 'income': 'поступление'}
-        df['type'] = df['type'].map(type_map).fillna('расход')
-
-        # Превращаем DataFrame в список словарей для обработки нашей логикой
-        transactions = []
-        for _, row in df.iterrows():
-            transactions.append({
-                "date": row['date'].to_pydatetime(),
-                "type": row['type'],
-                "category": row['category'],
-                "amount": float(row['amount'])
-            })
-        return transactions
-    except Exception as e:
-        print(f"Ошибка при чтении файла {file_path}: {e}")
-        return []
-
+PERIOD = Literal["DEFAULT", "W", "M", "Y", "ALL"]
 
 # ==========================================
 # ИНТЕГРАЦИЯ С РЕАЛЬНЫМИ ВНЕШНИМИ API
@@ -71,9 +15,9 @@ def load_transactions_from_xls(file_path: str = "data/operations.xls") -> list:
 
 def fetch_cbr_currency_rates(date_str: str) -> dict:
     """Получает официальные курсы валют от ЦБ РФ на указанную дату."""
-    target_date = datetime.strptime(date_str, "%Y-%m-%d")
+    target_date = datetime.strptime(date_str, "%Y.%m.%d %H:%M:%S")
     cbr_date_str = target_date.strftime("%d/%m/%Y")
-    url = f"https://cbr.ru{cbr_date_str}"
+    url = f"https://cbr.ru/scripts/XML_daily.asp?date_req={cbr_date_str}"
 
     target_char_codes = {"USD", "EUR", "CNY"}
     rates = {"USD": 0.0, "EUR": 0.0, "CNY": 0.0}
@@ -119,8 +63,8 @@ def fetch_real_stock_prices() -> dict:
 # ВЫЧИСЛЕНИЕ ДИАПАЗОНОВ С УЧЕТОМ УСЛОВИЯ
 # ==========================================
 
-def get_date_range(date_str: str, period: str = "DEFAULT"):
-    target_date = datetime.strptime(date_str, "%Y-%m-%d")
+def get_date_range(date_str: str, period: PERIOD = "DEFAULT"):
+    target_date = datetime.strptime(date_str, '%Y.%m.%d %H:%M:%S')
 
     if period == "DEFAULT":
         # По умолчанию: с начала месяца, на который выпадает дата, по саму дату
@@ -146,12 +90,25 @@ def get_date_range(date_str: str, period: str = "DEFAULT"):
 
     return start_date, end_date
 
+def get_greeting() -> str:
+    """Возвращает приветсвие в зависимости от времени суток"""
+    current_hour = datetime.now().hour
+
+    if 0 <= current_hour < 6:
+        return "Доброй ночи"
+    elif 6 <= current_hour < 12:
+        return "Доброе утро"
+    elif 12 <= current_hour < 18:
+        return "Добрый день"
+    else:
+        return "Добрый вечер"
+
 
 # ==========================================
 # ГЛАВНАЯ ФУНКЦИЯ ОБРАБОТКИ
 # ==========================================
 
-def process_financial_data(date_str: str, period: str = "DEFAULT", file_path: str = "data/operations.xls") -> str:
+def process_financial_data(date_str: str, period: PERIOD = "DEFAULT", file_path: str = "data/operations.xls") -> str:
     try:
         start_date, end_date = get_date_range(date_str, period)
     except ValueError as e:
@@ -159,62 +116,56 @@ def process_financial_data(date_str: str, period: str = "DEFAULT", file_path: st
 
     # Загружаем "живые" транзакции напрямую из Excel-файла
     transactions = load_transactions_from_xls(file_path)
+    # Фильтрация транзачкций
+    filtered_tx = [
+        tx for _, tx in transactions.iterrows()
+        if isinstance(tx["Дата платежа"], str) and start_date <= datetime.strptime(tx["Дата платежа"],
+                                                                                   "%d.%m.%Y") <= end_date
+    ]
+    #Cards
+    cards = {}
+    for transact in filtered_tx:
+        if pd.notna(transact.get("Номер карты")):
+            card_num = transact.get("Номер карты")
+            if transact.get("Статус") == "OK":
+                if (amount := int(transact.get("Сумма платежа"))) < 0:
+                    if card_num in cards:
+                        cards[card_num]["total_spent"] += abs(amount)
+                        if pd.notna(transact.get("Кэшбэк")):
+                            cards[card_num]["cashback"] += int(transact.get("Кэшбэк"))
+                    else:
+                        if pd.notna(transact.get("Кэшбэк")):
+                            cashback = int(transact.get("Кэшбэк"))
+                        else:
+                            cashback = 0
+                        cards[card_num] = {"total_spent": abs(amount),
+                                           "cashback": cashback}
+    cards_out = [{
+        "last_digits":cards,
+        "total_spent": val["total_spent"],
+        "cashback": val["cashback"]} for cards, val in cards.items()]
 
-    # Фильтрация транзакций
-    filtered_tx = [tx for tx in transactions if start_date <= tx["date"] <= end_date]
-
-    expenses_main = {}
-    expenses_transfers = {"Наличные": 0, "Переводы": 0}
-    incomes_main = {}
-    total_expenses, total_incomes = 0, 0
-
-    for tx in filtered_tx:
-        amount = tx["amount"]
-        category = tx["category"]
-
-        if tx["type"] == "расход":
-            total_expenses += amount
-            if category in ["Наличные", "Переводы"]:
-                expenses_transfers[category] += amount
-            else:
-                expenses_main[category] = expenses_main.get(category, 0) + amount
-        elif tx["type"] == "поступление":
-            total_incomes += amount
-            incomes_main[category] = incomes_main.get(category, 0) + amount
-
-    # Обработка основных расходов (Топ-7 + Остальное)
-    sorted_exp_main = sorted(expenses_main.items(), key=lambda x: x[1], reverse=True)
-    top_7_exp = sorted_exp_main[:7]
-    others_exp = sorted_exp_main[7:]
-
-    formatted_exp_main = {cat: round(amt) for cat, amt in top_7_exp}
-    if others_exp:
-        formatted_exp_main["Остальное"] = round(sum(amt for _, amt in others_exp))
-
-    # Обработка переводов и наличных
-    sorted_transfers = sorted(expenses_transfers.items(), key=lambda x: x[1], reverse=True)
-    formatted_transfers = {cat: round(amt) for cat, amt in sorted_transfers}
-
-    # Обработка поступлений
-    sorted_inc_main = sorted(incomes_main.items(), key=lambda x: x[1], reverse=True)
-    formatted_inc_main = {cat: round(amt) for cat, amt in sorted_inc_main}
-
+    #Топ 5 транзакций
+    top_transactions_raw = sorted(filtered_tx, key=lambda x: abs(x.get("Сумма платежа")), reverse=True)
+    top_transactions = []
+    for idx, value in enumerate(top_transactions_raw):
+        if idx < 5:
+            top_transactions.append({
+                "date": value.get("Дата платежа"),
+                "amount": value.get("Сумма платежа"),
+                "category": value.get("Категория"),
+                "description": value.get("Описание")
+            })
     # Живые котировки
     live_currency_rates = fetch_cbr_currency_rates(date_str)
     live_stock_prices = fetch_real_stock_prices()
 
     response_data = {
-        "Расходы": {
-            "Общая сумма": round(total_expenses),
-            "Основные": formatted_exp_main,
-            "Переводы и наличные": formatted_transfers
-        },
-        "Поступления": {
-            "Общая сумма": round(total_incomes),
-            "Основные": formatted_inc_main
-        },
-        "Курс валют": live_currency_rates,
-        "Стоимость акций S&P 500": live_stock_prices
+        "greeting": get_greeting(),
+        "cards": [cards_out],
+        "top_transactions": top_transactions,
+        "currency_rates": live_currency_rates,
+        "stock_prices": live_stock_prices
     }
 
     return json.dumps(response_data, ensure_ascii=False, indent=4)
@@ -222,5 +173,5 @@ def process_financial_data(date_str: str, period: str = "DEFAULT", file_path: st
 
 if __name__ == "__main__":
     # Демонстрационный запуск
-    json_result = process_financial_data("2026-05-15", "M")
+    json_result = process_financial_data("2021.05.25 00:00:00", "M")
     print(json_result)
