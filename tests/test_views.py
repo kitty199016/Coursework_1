@@ -1,118 +1,166 @@
-import os
-import sys
-
-# Добавляем корень проекта в пути поиска Python
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
-
-import json
 from datetime import datetime
+import json
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
+import pandas as pd
 
-# Импортируем функции
-from src.views import process_financial_data, get_date_range
+# Импортируем тестируемые функции напрямую из правильного модуля src.views
+from src.views import (
+    get_date_range,
+    get_greeting,
+    fetch_cbr_currency_rates,
+    fetch_real_stock_prices,
+    process_financial_data
+)
+
+
+# Функция-помощник для вычисления ожидаемого приветствия по текущему времени
+def get_expected_greeting() -> str:
+    current_hour = datetime.now().hour
+    if 0 <= current_hour < 6:
+        return "Доброй ночи"
+    elif 6 <= current_hour < 12:
+        return "Доброе утро"
+    elif 12 <= current_hour < 18:
+        return "Добрый день"
+    else:
+        return "Добрый вечер"
 
 
 # ==========================================
-# ФИКСТУРЫ
+# ТЕСТЫ ДЛЯ ВЫЧИСЛЕНИЯ ДИАПАЗОНОВ ДАТ
 # ==========================================
 
-@pytest.fixture
-def test_date():
-    return "2026-05-15"
-
-
-@pytest.fixture
-def mock_transactions_list():
-    """Возвращает фиксированный список транзакций, имитирующий файл."""
-    return [
-        {"date": datetime(2026, 5, 1), "type": "расход", "category": "Супермаркеты", "amount": 1000.4},
-        {"date": datetime(2026, 5, 10), "type": "расход", "category": "Рестораны", "amount": 500.1},
-        {"date": datetime(2026, 5, 12), "type": "расход", "category": "Наличные", "amount": 2000.0},
-        {"date": datetime(2026, 5, 15), "type": "расход", "category": "Переводы", "amount": 3000.0},
-        {"date": datetime(2026, 5, 15), "type": "поступление", "category": "Зарплата", "amount": 50000.0},
-        {"date": datetime(2026, 5, 20), "type": "расход", "category": "Транспорт", "amount": 300.0}
+@pytest.mark.parametrize(
+    "date_str, period, expected_start, expected_end",
+    [
+        ("2021.05.25 00:00:00", "DEFAULT", datetime(2021, 5, 1), datetime(2021, 5, 25)),
+        ("2021.05.25 00:00:00", "W", datetime(2021, 5, 24), datetime(2021, 5, 30)),
+        ("2021.05.25 00:00:00", "M", datetime(2021, 5, 1), datetime(2021, 5, 31)),
+        ("2021.12.10 00:00:00", "M", datetime(2021, 12, 1), datetime(2021, 12, 31)),
+        ("2021.05.25 00:00:00", "Y", datetime(2021, 1, 1), datetime(2021, 12, 31)),
+        ("2021.05.25 00:00:00", "ALL", datetime.min, datetime(2021, 5, 25)),
     ]
-
-
-# ==========================================
-# ТЕСТЫ ДЛЯ get_date_range
-# ==========================================
-
-@pytest.mark.parametrize("period, expected_start, expected_end", [
-    ("DEFAULT", datetime(2026, 5, 1), datetime(2026, 5, 15)),
-    ("W", datetime(2026, 5, 11), datetime(2026, 5, 17)),
-    ("M", datetime(2026, 5, 1), datetime(2026, 5, 31)),
-    ("Y", datetime(2026, 1, 1), datetime(2026, 12, 31)),
-    ("ALL", datetime.min, datetime(2026, 5, 15))
-])
-def test_get_date_range_valid(test_date, period, expected_start, expected_end):
-    start, end = get_date_range(test_date, period)
+)
+def test_get_date_range_valid(date_str, period, expected_start, expected_end):
+    start, end = get_date_range(date_str, period)
     assert start == expected_start
     assert end == expected_end
 
 
-def test_get_date_range_invalid(test_date):
-    with pytest.raises(ValueError, match="Неизвестный период"):
-        get_date_range(test_date, "UNKNOWN_PERIOD")
+def test_get_date_range_invalid_period():
+    with pytest.raises(ValueError, match="Неизвестный период: INVALID"):
+        get_date_range("2021.05.25 00:00:00", "INVALID")
 
 
 # ==========================================
-# ТЕСТЫ ГЛАВНОЙ ФУНКЦИИ
+# ТЕСТ ПРИВЕТСТВИЯ ПО ТЕКУЩЕМУ ВРЕМЕНИ
 # ==========================================
 
-@patch('src.views.load_transactions_from_xls')
-@patch('src.views.fetch_cbr_currency_rates')
-@patch('src.views.fetch_real_stock_prices')
-def test_process_financial_data_with_xls(mock_stocks, mock_currency, mock_load, mock_transactions_list, test_date):
-    """Тест парсинга данных и правильности математических расчетов."""
-    mock_load.return_value = mock_transactions_list
-    mock_currency.return_value = {"USD": 90.0, "EUR": 98.0, "CNY": 12.5}
-    mock_stocks.return_value = {"AAPL": 170.0, "MSFT": 400.0}
-
-    response_json = process_financial_data(test_date, "DEFAULT")
-    data = json.loads(response_json)
-
-    # 1. Проверка округления до целых и подсчета сумм
-    assert data["Расходы"]["Общая сумма"] == 6500
-    assert data["Поступления"]["Общая сумма"] == 50000
-
-    # 2. Проверка основных разделов расходов
-    assert data["Расходы"]["Основные"]["Супермаркеты"] == 1000
-    assert data["Расходы"]["Основные"]["Рестораны"] == 500
-
-    # 3. Проверка блоков Переводы/Наличные и их сортировки
-    transfers = data["Расходы"]["Переводы и наличные"]
-    assert transfers["Переводы"] == 3000
-    assert transfers["Наличные"] == 2000
-    assert list(transfers.keys()) == ["Переводы", "Наличные"]
-
-    # 4. Проверка интеграции с API-моками
-    assert data["Курс валют"]["USD"] == 90.0
-    assert data["Стоимость акций S&P 500"]["AAPL"] == 170.0
+def test_get_greeting_current_time():
+    """Тестирует приветствие на основе текущего системного времени."""
+    assert get_greeting() == get_expected_greeting()
 
 
-@patch('src.views.load_transactions_from_xls')
-@patch('src.views.fetch_cbr_currency_rates')
-@patch('src.views.fetch_real_stock_prices')
-def test_top_7_categories_and_others(mock_stocks, mock_currency, mock_load, test_date):
-    """Проверка лимита в 7 категорий и группировки остальных в 'Остальное'."""
-    mock_currency.return_value = {"USD": 90.0}
-    mock_stocks.return_value = {"AAPL": 170.0}
+# ==========================================
+# ТЕСТЫ ДЛЯ ВНЕШНИХ API (MOCKING)
+# ==========================================
 
-    # Имитируем 9 разных категорий расходов (каждая по 100 рублей)
-    mock_load.return_value = [
-        {"date": datetime(2026, 5, 15), "type": "расход", "category": f"Категория_{i}", "amount": 100.0}
-        for i in range(1, 10)
+@patch("urllib.request.urlopen")
+def test_fetch_cbr_currency_rates_success(mock_urlopen):
+    xml_response = b"""<?xml version="1.0" encoding="windows-1251"?>
+    <ValCurs Date="25.05.2021" name="Foreign Currency Market">
+        <Valute ID="R01235"><CharCode>USD</CharCode><Nominal>1</Nominal><Value>73,5021</Value></Valute>
+        <Valute ID="R01239"><CharCode>EUR</CharCode><Nominal>1</Nominal><Value>89,3012</Value></Valute>
+        <Valute ID="R01375"><CharCode>CNY</CharCode><Nominal>10</Nominal><Value>114,2035</Value></Valute>
+    </ValCurs>"""
+
+    mock_context = MagicMock()
+    mock_context.read.return_value = xml_response
+    mock_urlopen.return_value.__enter__.return_value = mock_context
+
+    rates = fetch_cbr_currency_rates("2021.05.25 00:00:00")
+    assert rates["USD"] == 73.50
+    assert rates["EUR"] == 89.30
+    assert rates["CNY"] == 11.42
+
+
+@patch("urllib.request.urlopen")
+def test_fetch_cbr_currency_rates_fallback(mock_urlopen):
+    mock_urlopen.side_effect = Exception("Сетевой сбой")
+    rates = fetch_cbr_currency_rates("2021.05.25 00:00:00")
+    assert rates == {"USD": 92.50, "EUR": 100.15, "CNY": 12.80}
+
+
+@patch("yfinance.download")
+def test_fetch_real_stock_prices_success(mock_download):
+    mock_df = pd.DataFrame(
+        [[175.2, 420.5, 875.0, 180.1]],
+        columns=pd.MultiIndex.from_tuples([('Close', 'AAPL'), ('Close', 'MSFT'), ('Close', 'NVDA'), ('Close', 'AMZN')])
+    )
+    mock_download.return_value = mock_df
+
+    prices = fetch_real_stock_prices()
+    assert prices["AAPL"] == 175.20
+    assert prices["MSFT"] == 420.50
+
+
+# ==========================================
+# ТЕСТ ИНТЕГРАЦИИ ГЛАВНОЙ ФУНКЦИИ
+# ==========================================
+
+@patch("src.views.load_transactions_from_xls")
+@patch("src.views.fetch_cbr_currency_rates")
+@patch("src.views.fetch_real_stock_prices")
+def test_process_financial_data(mock_stocks, mock_currency, mock_load_xls):
+    """Тест интеграционной функции с динамической сверкой времени."""
+
+    # Задаем стабильные ответы для внешних API
+    mock_currency.return_value = {"USD": 100.0, "EUR": 110.0, "CNY": 13.0}
+    mock_stocks.return_value = {"AAPL": 200.0, "MSFT": 400.0}
+
+    # Подготавливаем тестовые данные (одна транзакция траты, одна дохода, одна отмененная)
+    mock_data = [
+        {"Дата платежа": "20.05.2021", "Номер карты": "*1111", "Статус": "OK", "Сумма платежа": -5000, "Кэшбэк": 100,
+         "Категория": "Супермаркеты", "Описание": "Ашан"},
+        {"Дата платежа": "21.05.2021", "Номер карты": "*1111", "Статус": "OK", "Сумма платежа": 10000, "Кэшбэк": 0,
+         "Категория": "Пополнения", "Описание": "Зарплата"},
+        {"Дата платежа": "22.05.2021", "Номер карты": "*1111", "Статус": "FAILED", "Сумма платежа": -2000, "Кэшбэк": 0,
+         "Категория": "Одежда", "Описание": "Zara"}
     ]
 
-    response_json = process_financial_data(test_date, "M")
-    data = json.loads(response_json)
-    main_expenses = data["Расходы"]["Основные"]
+    mock_df = MagicMock()
+    mock_df.iterrows.return_value = [(i, pd.Series(item)) for i, item in enumerate(mock_data)]
+    mock_load_xls.return_value = mock_df
 
-    # Должно быть ровно 7 уникальных категорий + 1 категория "Остальное"
-    assert len(main_expenses) == 8
-    assert "Остальное" in main_expenses
-    assert main_expenses["Остальное"] == 200
+    # Запускаем функцию обработки
+    result_json = process_financial_data("2021.05.25 00:00:00", "M", "fake_path.xls")
+    result = json.loads(result_json)
+
+    # 1. Проверяем greeting на соответствие реальному текущему времени компьютера
+    assert result["greeting"] == get_expected_greeting()
+
+    # 2. Проверяем валюту
+    assert result["currency_rates"]["USD"] == 100.0
+
+    # 3. Проверяем карты с учетом вложенной структуры списков в вашем исходном коде: [ [ {..} ] ]
+    assert "cards" in result
+    assert len(result["cards"]) == 1
+
+    inner_cards_list = result["cards"][0]
+    assert len(inner_cards_list) == 1
+
+    target_card = inner_cards_list[0]
+    assert target_card["last_digits"] == "*1111"
+    assert target_card["total_spent"] == 5000
+    assert target_card["cashback"] == 100
+
+    # 4. Проверяем топ-транзакции (сортируются по модулю суммы платежа)
+    assert len(result["top_transactions"]) == 3
+    assert result["top_transactions"][0]["description"] == "Зарплата"
+
+
+def test_process_financial_data_error_flow():
+    result_json = process_financial_data("2021.05.25 00:00:00", "INVALID")
+    result = json.loads(result_json)
+    assert "error" in result
