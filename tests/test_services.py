@@ -1,144 +1,164 @@
-import os
-import sys
+from datetime import datetime
+import json
+import pytest
 from unittest.mock import patch
 import pandas as pd
-import pytest
-import re
-from src.services import search_for_transfers_to_individuals
+import os
 
-# Добавляем корень проекта в пути поиска Python
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+# Импортируем тестируемые функции и исключения
+from src.services import (
+    load_transactions_from_xls,
+    high_yield_cashback_categories,
+    search_for_transfers_to_individuals,
+    FileError
+)
 
-import json
-from datetime import datetime
-import pytest
-from unittest.mock import patch
 
-# Импортируем из нового сервисного модуля
-from src.services import high_yield_cashback_categories
+# ==========================================
+# ТЕСТЫ ДЛЯ ФУНКЦИИ load_transactions_from_xls
+# ==========================================
 
+def test_load_transactions_from_xls_not_found():
+    """Проверка генерации FileNotFoundError, если файла не существует."""
+    # Обновлен паттерн match под точный текст исключения из вашего кода
+    with pytest.raises(FileNotFoundError, match=r"Предупреждение: Файл не_существующий_файл\.xls не найден\."):
+        load_transactions_from_xls("не_существующий_файл.xls")
+
+
+@patch("pandas.read_excel")
+def test_load_transactions_from_xls_success(mock_read_excel, tmp_path):
+    """Проверка успешной загрузки данных из Excel."""
+    # Создаем временный пустой файл, чтобы os.path.exists вернул True
+    fake_file = tmp_path / "operations.xls"
+    fake_file.write_text("fake content")
+
+    mock_df = pd.DataFrame({"Дата операции": ["01.01.2021 00:00:00"]})
+    mock_read_excel.return_value = mock_df
+
+    result_df = load_transactions_from_xls(str(fake_file))
+
+    mock_read_excel.assert_called_once_with(str(fake_file), engine='xlrd')
+    assert isinstance(result_df, pd.DataFrame)
+    assert result_df.iloc[0]["Дата операции"] == "01.01.2021 00:00:00"
+
+
+@patch("pandas.read_excel")
+def test_load_transactions_from_xls_corrupted(mock_read_excel, tmp_path):
+    """Проверка выброса кастомного FileError при сбое парсинга файла."""
+    fake_file = tmp_path / "corrupted.xls"
+    fake_file.write_text("corrupted content")
+
+    # Имитируем падение движка xlrd
+    mock_read_excel.side_effect = Exception("Разрушенный заголовок файла")
+
+    with pytest.raises(FileError, match="Ошибка при чтении файла"):
+        load_transactions_from_xls(str(fake_file))
+
+
+# ==========================================
+# ТЕСТЫ ДЛЯ high_yield_cashback_categories
+# ==========================================
 
 @pytest.fixture
-def mock_transactions_list():
-    return [
-        {"date": datetime(2026, 5, 1), "type": "расход", "category": "Супермаркеты", "amount": 10000.0},
-        {"date": datetime(2026, 5, 4), "type": "расход", "category": "Рестораны", "amount": 5000.0},
-        {"date": datetime(2026, 5, 10), "type": "расход", "category": "Супермаркеты", "amount": 2000.0},
-        {"date": datetime(2026, 5, 15), "type": "расход", "category": "Переводы", "amount": 8000.0},
-        {"date": datetime(2026, 6, 1), "type": "расход", "category": "Рестораны", "amount": 3000.0},
-    ]
+def sample_cashback_data():
+    """Фикстура, генерирующая DataFrame с тестовыми транзакциями для кэшбэка."""
+    return pd.DataFrame([
+        # Подходящая транзакция 1 (Май 2021)
+        {"Дата операции": "15.05.2021 12:00:00", "Статус": "OK", "Кэшбэк": 100, "Категория": "Супермаркеты",
+         "Сумма платежа": -2000},
+        # Подходящая транзакция 2 (Май 2021, та же категория для проверки агрегации)
+        {"Дата операции": "20.05.2021 15:30:00", "Статус": "OK", "Кэшбэк": 50, "Категория": "Супермаркеты",
+         "Сумма платежа": -1000},
+        # Подходящая транзакция 3 (Май 2021, другая категория)
+        {"Дата операции": "25.05.2021 18:00:00", "Статус": "OK", "Кэшбэк": 300, "Категория": "Рестораны",
+         "Сумма платежа": -3000},
+        # Не подходит: Другой месяц (Июнь)
+        {"Дата операции": "01.06.2021 10:00:00", "Статус": "OK", "Кэшбэк": 100, "Категория": "Супермаркеты",
+         "Сумма платежа": -2000},
+        # Не подходит: Неуспешный статус операции
+        {"Дата операции": "16.05.2021 11:00:00", "Статус": "FAILED", "Кэшбэк": 100, "Категория": "Фастфуд",
+         "Сумма платежа": -1000},
+        # Не подходит: Это доход (Сумма платежа > 0)
+        {"Дата операции": "17.05.2021 09:00:00", "Статус": "OK", "Кэшбэк": 0, "Категория": "Пополнения",
+         "Сумма платежа": 50000},
+        # Не подходит: Кэшбэк равен NaN/None
+        {"Дата операции": "18.05.2021 14:00:00", "Статус": "OK", "Кэшбэк": None, "Категория": "Такси",
+         "Сумма платежа": -500}
+    ])
 
 
-@patch('src.services.load_transactions_from_xls')
-def test_high_yield_cashback_categories_from_file(mock_load, mock_transactions_list):
-    """Тест анализа кэшбэка при автоматическом чтении из файла в src.services."""
-    mock_load.return_value = mock_transactions_list
+def test_high_yield_cashback_categories_success(sample_cashback_data):
+    """Проверка правильной фильтрации, суммирования и сортировки кэшбэка."""
+    json_str = high_yield_cashback_categories(sample_cashback_data, year=2021, month=5)
+    result = json.loads(json_str)
 
-    # Вызываем функцию без передачи data, чтобы сработал триггер чтения файла
-    result_json = high_yield_cashback_categories(data=None, year=2026, month=5)
-    data = json.loads(result_json)
+    # Проверяем, что попали только нужные категории
+    assert "Супермаркеты" in result
+    assert "Рестораны" in result
+    assert "Фастфуд" not in result  # Исключен по статусу FAILED
+    assert "Пополнения" not in result  # Исключен по положительной сумме
 
-    # Проверяем расчеты (5%): Супермаркеты (12000 * 0.05 = 600), Рестораны (5000 * 0.05 = 250)
-    assert data["Супермаркеты"] == 600
-    assert data["Рестораны"] == 250
-    assert "Переводы" not in data
+    # Проверяем правильность суммирования трат (берется модуль суммы)
+    # Супермаркеты: 2000 + 1000 = 3000
+    assert result["Супермаркеты"] == 3000
+    # Рестораны: 3000
+    assert result["Рестораны"] == 3000
 
-    # Проверка сортировки по убыванию прибыли
-    assert list(data.keys()) == ["Супермаркеты", "Рестораны"]
 
+def test_high_yield_cashback_categories_empty():
+    """Проверка поведения функции, если за выбранный месяц транзакций нет."""
+    empty_df = pd.DataFrame(columns=["Дата операции", "Статус", "Кэшбэк", "Категория", "Сумма платежа"])
+    json_str = high_yield_cashback_categories(empty_df, 2023, 1)
+
+    assert json.loads(json_str) == {}
+
+
+# ==========================================
+# ТЕСТЫ ДЛЯ search_for_transfers_to_individuals
+# ==========================================
 
 @pytest.fixture
-def mock_excel_data():
-    """Фикстура, которая имитирует содержимое Excel-файла."""
-    return pd.DataFrame(
-        [
-            {
-                "category": "Переводы",
-                "description": "Валерий А.",
-                "amount": 1500,
-            },  # Подходит
-            {
-                "category": "Супермаркеты",
-                "description": "Пятерочка",
-                "amount": 450,
-            },  # Не та категория
-            {
-                "category": "Переводы",
-                "description": "Сергей З.",
-                "amount": 300,
-            },  # Подходит
-            {
-                "category": "Переводы",
-                "description": "Оплата ЖКХ",
-                "amount": 2800,
-            },  # Не имя физлица
-            {
-                "category": "Переводы",
-                "description": "Артем П.",
-                "amount": 10000,
-            },  # Подходит
-            {
-                "category": "Переводы",
-                "description": "Перевод между своими счетами",
-                "amount": 5000,
-            },  # Не имя физлица
-            {
-                "category": "Переводы",
-                "description": "Иван Иванович",
-                "amount": 100,
-            },  # Нет точки и фамилия целиком
-            {
-                "category": "Переводы",
-                "description": "петр С.",
-                "amount": 200,
-            },  # Имя со строчной буквы
-        ]
-    )
+def sample_transfer_data():
+    """Фикстура, генерирующая DataFrame для проверки регулярного выражения физических лиц."""
+    return pd.DataFrame([
+        # Валидный кейс: Категория Переводы и формат "Имя Ф."
+        {"Категория": "Переводы", "Описание": "Александр С.", "Сумма платежа": -500},
+        {"Категория": "Переводы", "Описание": "Иван Г.", "Сумма платежа": -1000},
+
+        # Невалидный кейс 1: Маленькая буква в имени или инициале
+        {"Категория": "Переводы", "Описание": "игорь П.", "Сумма платежа": -300},
+        {"Категория": "Переводы", "Описание": "Олег в.", "Сумма платежа": -400},
+
+        # Невалидный кейс 2: Отсутствие точки или лишние буквы в фамилии
+        {"Категория": "Переводы", "Описание": "Анна С", "Сумма платежа": -200},
+        {"Категория": "Переводы", "Описание": "Мария Смирнова", "Сумма платежа": -150},
+
+        # Невалидный кейс 3: Другая категория, хоть имя и подходит
+        {"Категория": "Супермаркеты", "Описание": "Сергей М.", "Сумма платежа": -800},
+
+        # Невалидный кейс 4: Это доходная операция (Сумма платежа > 0)
+        {"Категория": "Переводы", "Описание": "Елена Б.", "Сумма платежа": 5000}
+    ])
 
 
-@patch("pandas.read_excel")
-def test_search_transfers_success(mock_read_excel, mock_excel_data):
-    """Тест успешного поиска и фильтрации транзакций."""
-    # Подменяем возвращаемое значение pd.read_excel нашим фейковым датафреймом
-    mock_read_excel.return_value = mock_excel_data
+def test_search_for_transfers_to_individuals_regex(sample_transfer_data):
+    """Проверка фильтрации переводов физическим лицам по регулярному выражению."""
+    result = search_for_transfers_to_individuals(sample_transfer_data)
 
-    result = search_for_transfers_to_individuals()
+    # Должно быть найдено только два перевода ("Александр С." и "Иван Г.")
+    assert len(result) == 2
 
-    # Проверяем, что в результате ровно 3 транзакции (Валерий А., Сергей З., Артем П.)
-    assert "transactions" in result
-    assert len(result["transactions"]) == 3
-
-    # Проверяем конкретные имена в отфильтрованном результате
-    descriptions = [tx["description"] for tx in result["transactions"]]
-    assert "Валерий А." in descriptions
-    assert "Сергей З." in descriptions
-    assert "Артем П." in descriptions
-    assert "Оплата ЖКХ" not in descriptions
+    descriptions = [tx["Описание"] for tx in result]
+    assert "Александр С." in descriptions
+    assert "Иван Г." in descriptions
+    assert "игорь П." not in descriptions
+    assert "Сергей М." not in descriptions  # Отсечен по категории
+    assert "Елена Б." not in descriptions  # Отсечен по положительной сумме
 
 
-@patch("pandas.read_excel")
-def test_search_transfers_file_not_found(mock_read_excel):
-    """Тест поведения функции, если файл отсутствует на диске."""
-    # Имитируем ошибку отсутствия файла
-    mock_read_excel.side_effect = FileNotFoundError()
+def test_search_for_transfers_to_individuals_empty():
+    """Проверка работы функции на пустом наборе данных."""
+    empty_df = pd.DataFrame(columns=["Категория", "Описание", "Сумма платежа"])
+    result = search_for_transfers_to_individuals(empty_df)
 
-    result = search_for_transfers_to_individuals()
-
-    assert "error" in result
-    assert "не найден" in result["error"]
-
-
-@patch("pandas.read_excel")
-def test_search_transfers_empty_file(mock_read_excel):
-    """Тест поведения функции, если Excel файл пустой."""
-    # Возвращаем пустой датафрейм
-    mock_read_excel.return_value = pd.DataFrame(
-        columns=["category", "description", "amount"]
-    )
-
-    result = search_for_transfers_to_individuals()
-
-    assert "transactions" in result
-    assert len(result["transactions"]) == 0
+    assert result == []
