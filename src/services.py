@@ -4,8 +4,27 @@ import os
 import pandas as pd
 import re
 
+CONFIGS: dict | None = None
+
 class FileError(Exception):
     """Custom File error class"""
+
+
+def load_config_json(file_path: str = "user_settings.json") -> dict:
+    global CONFIGS
+
+    if CONFIGS is None:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Предупреждение: Файл {file_path} не найден.")
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as file:
+                # Теперь перезапись переменной запишется в глобальный кэш
+                CONFIGS = json.load(file)
+        except Exception as e:
+            raise FileError(f"Ошибка при чтении конфигурационного файла {file_path}: {e}")
+
+    return CONFIGS
 
 def load_transactions_from_xls(file_path: str = "data/operations.xls") -> pd.DataFrame:
     """Загружает транзакции из Excel-файла (.xls) с помощью xlrd."""

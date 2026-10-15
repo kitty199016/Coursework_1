@@ -1,0 +1,5 @@
+{
+  "target_char_codes": ["USD", "EUR", "CNY"],
+  "rates": {"USD": 0.0, "EUR": 0.0, "CNY": 0.0},
+  "tickers": ["AAPL", "MSFT", "NVDA", "AMZN"]
+}

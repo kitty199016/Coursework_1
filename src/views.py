@@ -4,7 +4,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 import yfinance as yf
 from typing import Literal
-from src.services import load_transactions_from_xls
+from src.services import load_transactions_from_xls, load_config_json
 import pandas as pd
 
 PERIOD = Literal["DEFAULT", "W", "M", "Y", "ALL"]
@@ -19,8 +19,8 @@ def fetch_cbr_currency_rates(date_str: str) -> dict:
     cbr_date_str = target_date.strftime("%d/%m/%Y")
     url = f"https://cbr.ru/scripts/XML_daily.asp?date_req={cbr_date_str}"
 
-    target_char_codes = {"USD", "EUR", "CNY"}
-    rates = {"USD": 0.0, "EUR": 0.0, "CNY": 0.0}
+    target_char_codes = load_config_json()["target_char_codes"]
+    rates = load_config_json()["rates"]
 
     try:
         req = urllib.request.Request(
@@ -46,7 +46,7 @@ def fetch_cbr_currency_rates(date_str: str) -> dict:
 
 def fetch_real_stock_prices() -> dict:
     """Получает рыночную стоимость акций из S&P 500 в реальном времени."""
-    tickers = ["AAPL", "MSFT", "NVDA", "AMZN"]
+    tickers = load_config_json()["tickers"]
     stock_prices = {}
     try:
         data = yf.download(tickers, period="1d", progress=False)
